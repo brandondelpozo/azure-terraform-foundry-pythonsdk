@@ -64,6 +64,20 @@ resource "azurerm_storage_account" "function" {
   }
 }
 
+# Blob container for incoming .txt uploads (Path C)
+resource "azurerm_storage_container" "uploads" {
+  name                  = "uploads"
+  storage_account_name  = azurerm_storage_account.function.name
+  container_access_type = "private"
+}
+
+# Blob container for processed results (Path C)
+resource "azurerm_storage_container" "results" {
+  name                  = "results"
+  storage_account_name  = azurerm_storage_account.function.name
+  container_access_type = "private"
+}
+
 # Service Plan for Function App
 resource "azurerm_service_plan" "function" {
   name                = "plan-${var.function_app_name}"
@@ -100,6 +114,8 @@ resource "azurerm_linux_function_app" "function" {
     "OPENAI_ENDPOINT"          = azurerm_cognitive_account.openai.endpoint
     "OPENAI_API_KEY"           = azurerm_cognitive_account.openai.primary_access_key
     "OPENAI_MODEL"             = var.model_deployment_name
+    "STORAGE_ACCOUNT_NAME"     = azurerm_storage_account.function.name
+    "STORAGE_ACCOUNT_KEY"      = azurerm_storage_account.function.primary_access_key
   }
 
   tags = {
