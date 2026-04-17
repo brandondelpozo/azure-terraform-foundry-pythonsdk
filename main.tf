@@ -99,6 +99,7 @@ resource "azurerm_application_insights" "function" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   application_type    = "web"
+  workspace_id        = "/subscriptions/22109732-7f59-4d79-9e8d-287973f3802e/resourceGroups/ai_appi-func-testfoundry3-endpoint_2344da3a-de2a-42c2-8a80-db0b9485b848_managed/providers/Microsoft.OperationalInsights/workspaces/managed-appi-func-testfoundry3-endpoint-ws"
 
   tags = {
     project     = "testfoundry3-endpoint"

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import traceback
+import importlib.util
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
@@ -12,6 +13,7 @@ from azure.storage.blob import (
     generate_blob_sas,
     BlobSasPermissions,
     ContainerClient,
+    ContentSettings,
 )
 
 from agents.parse_text_agent import parse_text_agent, AgentState
@@ -22,6 +24,20 @@ from agents.consolidate_text_agent import consolidate_text_agent
 logging.basicConfig(level=logging.INFO)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+
+
+def _load_pdf_converter():
+    """Load pdf converter helper from utilities-functions/pdf_converter.py."""
+    repo_root = os.path.dirname(os.path.dirname(__file__))
+    converter_path = os.path.join(repo_root, "utilities-functions", "pdf_converter.py")
+
+    spec = importlib.util.spec_from_file_location("pdf_converter", converter_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load pdf converter from {converter_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 # ---------------------------------------------------------------------------
 # Helper: extract plain text from .txt or .docx bytes
@@ -341,6 +357,23 @@ def process_blob(blob: func.InputStream):
         )
 
         logging.info(f"Result saved to results/{result_blob_name}")
+
+        pdf_base64 = result.get("pdf_base64", "")
+        if not pdf_base64:
+            logging.warning("pdf_base64 is empty for %s; skipping PDF output", filename)
+            return
+
+        logging.info("Converting pdf_base64 to binary PDF for %s", filename)
+        pdf_converter = _load_pdf_converter()
+        pdf_bytes = pdf_converter.base64_to_pdf_bytes(pdf_base64)
+        pdf_blob_name = f"{filename}.pdf"
+        results_container.upload_blob(
+            name=pdf_blob_name,
+            data=pdf_bytes,
+            overwrite=True,
+            content_settings=ContentSettings(content_type="application/pdf"),
+        )
+        logging.info("PDF saved to results/%s", pdf_blob_name)
 
     except Exception as e:
         error_payload = {
