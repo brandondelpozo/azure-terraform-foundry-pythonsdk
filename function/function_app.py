@@ -5,6 +5,7 @@ import logging
 import os
 import traceback
 import importlib.util
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
@@ -72,6 +73,24 @@ def _run_agent_pipeline(text: str) -> dict:
     state1 = parse_text_agent(initial_state)
     state2 = find_equivalents_agent(state1)
     return consolidate_text_agent(state2)
+
+
+def _build_docx_bytes_from_text(text: str) -> bytes:
+    """Build a .docx document from plain text while preserving paragraph breaks."""
+    from docx import Document
+
+    document = Document()
+
+    lines = text.split("\n")
+    if not lines:
+        lines = [text]
+
+    for line in lines:
+        document.add_paragraph(line)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +318,8 @@ def generate_upload_url(req: func.HttpRequest) -> func.HttpResponse:
 def process_blob(blob: func.InputStream):
     """
     Automatically triggered when a .txt file is uploaded to the 'uploads' container.
-    Reads the file, runs it through the 3-agent pipeline, and saves the JSON
-    result to the 'results' container as <original_name>.json
+    Reads the file, runs it through the 3-agent pipeline, saves an improved
+    .docx document to the 'results' container, and stores debug metadata as JSON.
     """
     blob_name = blob.name  # e.g. "uploads/mydoc.txt"
     filename = blob_name.split("/")[-1]  # e.g. "mydoc.txt"
@@ -308,7 +327,9 @@ def process_blob(blob: func.InputStream):
     logging.info(f"Blob trigger fired for: {blob_name}")
     account_name = os.environ["STORAGE_ACCOUNT_NAME"]
     account_key = os.environ["STORAGE_ACCOUNT_KEY"]
-    result_blob_name = f"{filename}.json"
+    base_name, _ = os.path.splitext(filename)
+    result_blob_name = f"{base_name}.metadata.json"
+    improved_docx_blob_name = f"{base_name}_improved.docx"
 
     try:
         # Skip unsupported file types silently
@@ -332,15 +353,16 @@ def process_blob(blob: func.InputStream):
         result = {
             "success": True,
             "source_blob": blob_name,
+            "result_blob": f"results/{improved_docx_blob_name}",
+            "metadata_blob": f"results/{result_blob_name}",
             "original_text": final_state.get("text", ""),
             "enhanced_text": final_state.get("enhanced_text", ""),
             "synonyms_found": len(final_state.get("synonyms", {})),
-            "pdf_base64": final_state.get("pdf_content", ""),
             "parsed_data": final_state.get("parsed_data", {}),
             "workflow_info": {
                 "agents_used": ["parse_text", "find_equivalents", "consolidate_text"],
                 "workflow_type": "blob_trigger_pipeline",
-                "version": "1.0",
+                "version": "1.2",
             },
         }
 
@@ -350,30 +372,27 @@ def process_blob(blob: func.InputStream):
             credential=account_key,
         )
         results_container = blob_service.get_container_client("results")
+        enhanced_text = final_state.get("enhanced_text", "") or final_state.get("text", "")
+        improved_docx_bytes = _build_docx_bytes_from_text(enhanced_text)
+
+        results_container.upload_blob(
+            name=improved_docx_blob_name,
+            data=improved_docx_bytes,
+            overwrite=True,
+            content_settings=ContentSettings(
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+        )
+        logging.info("Improved DOCX saved to results/%s", improved_docx_blob_name)
+
         results_container.upload_blob(
             name=result_blob_name,
             data=json.dumps(result, ensure_ascii=False),
             overwrite=True,
+            content_settings=ContentSettings(content_type="application/json"),
         )
 
         logging.info(f"Result saved to results/{result_blob_name}")
-
-        pdf_base64 = result.get("pdf_base64", "")
-        if not pdf_base64:
-            logging.warning("pdf_base64 is empty for %s; skipping PDF output", filename)
-            return
-
-        logging.info("Converting pdf_base64 to binary PDF for %s", filename)
-        pdf_converter = _load_pdf_converter()
-        pdf_bytes = pdf_converter.base64_to_pdf_bytes(pdf_base64)
-        pdf_blob_name = f"{filename}.pdf"
-        results_container.upload_blob(
-            name=pdf_blob_name,
-            data=pdf_bytes,
-            overwrite=True,
-            content_settings=ContentSettings(content_type="application/pdf"),
-        )
-        logging.info("PDF saved to results/%s", pdf_blob_name)
 
     except Exception as e:
         error_payload = {
