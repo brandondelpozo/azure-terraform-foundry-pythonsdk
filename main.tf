@@ -93,6 +93,20 @@ resource "azurerm_service_plan" "function" {
   }
 }
 
+# Application Insights for Function diagnostics
+resource "azurerm_application_insights" "function" {
+  name                = "appi-${var.function_app_name}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  application_type    = "web"
+
+  tags = {
+    project     = "testfoundry3-endpoint"
+    environment = "dev"
+    managed_by  = "terraform"
+  }
+}
+
 # Function App
 resource "azurerm_linux_function_app" "function" {
   name                = var.function_app_name
@@ -104,6 +118,9 @@ resource "azurerm_linux_function_app" "function" {
   service_plan_id            = azurerm_service_plan.function.id
 
   site_config {
+    application_insights_connection_string = azurerm_application_insights.function.connection_string
+    application_insights_key               = azurerm_application_insights.function.instrumentation_key
+
     application_stack {
       python_version = "3.11"
     }
@@ -111,6 +128,7 @@ resource "azurerm_linux_function_app" "function" {
 
   app_settings = {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
+    "AzureWebJobsStorage"      = "DefaultEndpointsProtocol=https;AccountName=${azurerm_storage_account.function.name};AccountKey=${azurerm_storage_account.function.primary_access_key};EndpointSuffix=core.windows.net"
     "OPENAI_ENDPOINT"          = azurerm_cognitive_account.openai.endpoint
     "OPENAI_API_KEY"           = azurerm_cognitive_account.openai.primary_access_key
     "OPENAI_MODEL"             = var.model_deployment_name

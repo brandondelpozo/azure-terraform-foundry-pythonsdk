@@ -3,6 +3,7 @@ import azure.durable_functions as df
 import json
 import logging
 import os
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
@@ -21,6 +22,25 @@ from agents.consolidate_text_agent import consolidate_text_agent
 logging.basicConfig(level=logging.INFO)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+
+# ---------------------------------------------------------------------------
+# Helper: extract plain text from .txt or .docx bytes
+# ---------------------------------------------------------------------------
+def _extract_text(blob_bytes: bytes, filename: str) -> str:
+    """Extract plain text from .txt or .docx bytes."""
+    if filename.endswith(".txt"):
+        return blob_bytes.decode("utf-8")
+    elif filename.endswith(".docx"):
+        import io
+        from docx import Document
+        logging.info("Parsing .docx content for %s", filename)
+        doc = Document(io.BytesIO(blob_bytes))
+        paragraphs = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
+        logging.info("Extracted %d non-empty paragraphs from %s", len(paragraphs), filename)
+        return "\n".join(paragraphs)
+    else:
+        raise ValueError(f"Unsupported file type: {filename}")
+
 
 # ---------------------------------------------------------------------------
 # Helper: run the 3-agent pipeline on a plain text string
@@ -200,9 +220,10 @@ def generate_upload_url(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         filename = req_body["filename"]
-        if not filename.endswith(".txt"):
+        ALLOWED = (".txt", ".docx")
+        if not filename.endswith(ALLOWED):
             return func.HttpResponse(
-                json.dumps({"error": "Only .txt files are supported"}),
+                json.dumps({"error": "Only .txt and .docx files are supported"}),
                 status_code=400,
                 mimetype="application/json",
             )
@@ -257,6 +278,7 @@ def generate_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     arg_name="blob",
     path="uploads/{name}",
     connection="AzureWebJobsStorage",
+    data_type="binary",
 )
 def process_blob(blob: func.InputStream):
     """
@@ -268,10 +290,20 @@ def process_blob(blob: func.InputStream):
     filename = blob_name.split("/")[-1]  # e.g. "mydoc.txt"
 
     logging.info(f"Blob trigger fired for: {blob_name}")
+    account_name = os.environ["STORAGE_ACCOUNT_NAME"]
+    account_key = os.environ["STORAGE_ACCOUNT_KEY"]
+    result_blob_name = f"{filename}.json"
 
     try:
-        # Read text content from the blob
-        text = blob.read().decode("utf-8")
+        # Skip unsupported file types silently
+        ALLOWED = (".txt", ".docx")
+        if not filename.endswith(ALLOWED):
+            logging.warning(f"Blob {filename} has unsupported type — skipping")
+            return
+
+        # Read raw bytes and extract text based on file type
+        raw_bytes = blob.read()
+        text = _extract_text(raw_bytes, filename)
         logging.info(f"Read {len(text)} characters from blob: {filename}")
 
         if not text.strip():
@@ -297,10 +329,6 @@ def process_blob(blob: func.InputStream):
         }
 
         # Save result to the 'results' container
-        account_name = os.environ["STORAGE_ACCOUNT_NAME"]
-        account_key = os.environ["STORAGE_ACCOUNT_KEY"]
-        result_blob_name = f"{filename}.json"
-
         blob_service = BlobServiceClient(
             account_url=f"https://{account_name}.blob.core.windows.net",
             credential=account_key,
@@ -315,5 +343,30 @@ def process_blob(blob: func.InputStream):
         logging.info(f"Result saved to results/{result_blob_name}")
 
     except Exception as e:
-        logging.error(f"process_blob error for {blob_name}: {str(e)}")
-        raise
+        error_payload = {
+            "success": False,
+            "source_blob": blob_name,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "workflow_info": {
+                "workflow_type": "blob_trigger_pipeline",
+                "version": "1.1",
+            },
+        }
+
+        logging.exception("process_blob error for %s", blob_name)
+
+        try:
+            blob_service = BlobServiceClient(
+                account_url=f"https://{account_name}.blob.core.windows.net",
+                credential=account_key,
+            )
+            results_container = blob_service.get_container_client("results")
+            results_container.upload_blob(
+                name=result_blob_name,
+                data=json.dumps(error_payload, ensure_ascii=False),
+                overwrite=True,
+            )
+            logging.info("Saved error payload to results/%s", result_blob_name)
+        except Exception:
+            logging.exception("Failed to persist error payload for %s", blob_name)
