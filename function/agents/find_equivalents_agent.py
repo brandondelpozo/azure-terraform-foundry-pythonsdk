@@ -80,11 +80,15 @@ JSON Response:"""
                 "total_tokens": result["usage"].get("total_tokens", 0)
             }
             logging.info(f"Token usage - Prompt: {token_usage['prompt_tokens']}, Completion: {token_usage['completion_tokens']}, Total: {token_usage['total_tokens']}")
+        else:
+            logging.warning("No usage field found in Azure OpenAI response")
+            logging.info(f"Response keys: {list(result.keys())}")
         
         # Extract completion text from chat response
         if "choices" in result and len(result["choices"]) > 0:
             completion_text = result["choices"][0]["message"]["content"].strip()
             logging.info(f"Azure OpenAI chat completion: {completion_text[:200]}...")
+            logging.info(f"Raw AI response: {repr(completion_text[:500])}")
             
             # Try to parse as JSON
             try:
@@ -93,14 +97,30 @@ JSON Response:"""
                 # Validate it's a dictionary
                 if isinstance(synonyms, dict) and synonyms:
                     logging.info(f"Azure OpenAI Chat Completions found synonyms for {len(synonyms)} words")
+                    logging.info(f"CRITICAL: Returning AI synonyms with token usage: {token_usage}")
+                    logging.info(f"CRITICAL: Token usage type: {type(token_usage)}, empty: {not token_usage}")
+                    # Ensure token usage is always populated when AI succeeds
+                    if not token_usage or token_usage == {}:
+                        # Calculate estimated tokens based on text length
+                        estimated_prompt = len(text.split()) * 1.3  # Rough estimate
+                        estimated_completion = len(str(synonyms)) / 4  # Rough estimate
+                        token_usage = {
+                            "prompt_tokens": int(estimated_prompt),
+                            "completion_tokens": int(estimated_completion),
+                            "total_tokens": int(estimated_prompt + estimated_completion),
+                            "estimated": True
+                        }
+                        logging.warning(f"Token usage was empty, using estimated values: {token_usage}")
                     return synonyms, token_usage
                 else:
                     logging.warning("Azure OpenAI returned empty or invalid dictionary")
+                    logging.info(f"Returning empty synonyms with token usage: {token_usage}")
                     return {}, token_usage
                     
             except json.JSONDecodeError as json_err:
                 logging.error(f"Failed to parse Azure OpenAI completion as JSON: {json_err}")
-                logging.error(f"Raw completion text: {completion_text}")
+                logging.error(f"Raw completion text that failed: {repr(completion_text)}")
+                logging.info(f"Returning empty synonyms but preserving token usage: {token_usage}")
                 return {}, token_usage
         else:
             logging.error("Azure OpenAI response missing choices")
@@ -128,11 +148,35 @@ def find_equivalents_agent(state: AgentState) -> AgentState:
     # Try Azure OpenAI Chat Completions first
     ai_synonyms, token_usage = _call_azure_openai_chat_completions_for_synonyms(text)
     
+    logging.info(f"AI call result - Synonyms: {len(ai_synonyms) if ai_synonyms else 0} groups, Token usage: {token_usage}")
+    
+    # ALWAYS estimate token usage if we attempted an AI call (even if it returned no synonyms)
+    if not token_usage or len(token_usage) == 0:
+        # Estimate based on text length
+        estimated_prompt = max(len(text.split()) * 1.3, 50)  # Minimum 50 tokens
+        estimated_completion = 30  # Reasonable default
+        token_usage = {
+            "prompt_tokens": int(estimated_prompt),
+            "completion_tokens": estimated_completion,
+            "total_tokens": int(estimated_prompt + estimated_completion),
+            "estimated": True,
+            "reason": "AI_call_attempted_but_no_usage_returned"
+        }
+        logging.warning(f"Estimated token usage after AI call: {token_usage}")
+    
+    # FORCE token usage to always have a value for debugging
+    if not token_usage:
+        token_usage = {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "forced": True}
+        logging.error("CRITICAL: Had to force token_usage to non-empty value!")
+    
     if ai_synonyms:
         # Use AI-generated synonyms
         state["synonyms"] = ai_synonyms
         state["token_usage"] = token_usage
         logging.info(f"Using Azure OpenAI Chat Completions synonyms for {len(ai_synonyms)} words")
+        logging.info(f"Stored token usage in state: {token_usage}")
+        logging.info(f"DEBUG: AI synonyms used, token_usage={token_usage}")
+        logging.info(f"DEBUG: State keys after AI: {list(state.keys())}")
     else:
         # Fallback to enhanced hardcoded synonyms
         logging.info("Using enhanced fallback synonym mapping")
@@ -180,8 +224,13 @@ def find_equivalents_agent(state: AgentState) -> AgentState:
                 found_synonyms[clean_word] = professional_synonym_map[clean_word]
         
         state["synonyms"] = found_synonyms
-        state["token_usage"] = {}  # No tokens used for fallback
+        # Preserve token usage from AI call (already estimated above)
+        state["token_usage"] = token_usage
         logging.info(f"Fallback found synonyms for {len(found_synonyms)} words")
+        logging.info(f"Preserved token usage from AI call: {state['token_usage']}")
+        logging.info(f"DEBUG: Fallback used, token_usage={state['token_usage']}")
     
     logging.info("Synonym analysis completed")
+    logging.info(f"DEBUG: Final state token_usage={state.get('token_usage', 'MISSING')}")
+    logging.info(f"DEBUG: Final token_usage type={type(state.get('token_usage'))}, value={state.get('token_usage')}")
     return state

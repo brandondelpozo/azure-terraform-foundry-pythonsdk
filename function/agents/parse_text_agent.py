@@ -7,6 +7,7 @@ class AgentState(TypedDict):
     synonyms: dict
     enhanced_text: str
     pdf_content: str
+    token_usage: dict  # Add token_usage to the state type
 
 def parse_text_agent(state: AgentState) -> AgentState:
     """Parse and analyze input text"""

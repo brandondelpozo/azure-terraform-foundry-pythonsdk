@@ -107,6 +107,9 @@ def http_start(req: func.HttpRequest) -> func.HttpResponse:
 
         # Use LangGraph pipeline
         final_state = _run_agent_pipeline(text, filename)
+        
+        logging.info(f"HTTP: Received final_state keys: {list(final_state.keys())}")
+        logging.info(f"HTTP: final_state token_usage: {final_state.get('token_usage', 'MISSING')}")
 
         response = {
             "success": True,

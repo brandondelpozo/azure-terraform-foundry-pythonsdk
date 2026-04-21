@@ -39,6 +39,7 @@ def run_langgraph_document_pipeline(text: str, filename: str = "document.docx") 
         "synonyms": {},
         "enhanced_text": "",
         "pdf_content": "",
+        "token_usage": {},  # Add token_usage to initial state
     }
     
     # Create and invoke the graph
@@ -48,4 +49,8 @@ def run_langgraph_document_pipeline(text: str, filename: str = "document.docx") 
     final_state = app.invoke(initial_state)
     
     logging.info(f"LangGraph pipeline completed for: {filename}")
+    logging.info(f"Final state keys: {list(final_state.keys())}")
+    logging.info(f"Final state token_usage: {final_state.get('token_usage', 'MISSING')}")
+    logging.info(f"Final state token_usage type: {type(final_state.get('token_usage'))}")
+    logging.info(f"Final state token_usage value: {repr(final_state.get('token_usage'))}")
     return final_state
