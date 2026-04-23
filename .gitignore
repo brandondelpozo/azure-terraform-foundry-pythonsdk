@@ -25,3 +25,4 @@ build/
 .vscodelocal.settings.json
 tfplan
 *.tfplan
+.vscode/
