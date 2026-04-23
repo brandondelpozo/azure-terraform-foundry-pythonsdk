@@ -109,21 +109,25 @@ def http_start(req: func.HttpRequest) -> func.HttpResponse:
         final_state = _run_agent_pipeline(text, filename)
         
         logging.info(f"HTTP: Received final_state keys: {list(final_state.keys())}")
+        logging.info(f"HTTP: final_state title: {final_state.get('title', 'MISSING')}")
+        logging.info(f"HTTP: final_state summary: {final_state.get('summary', 'MISSING')}")
         logging.info(f"HTTP: final_state token_usage: {final_state.get('token_usage', 'MISSING')}")
 
         response = {
             "success": True,
             "original_text": final_state.get("text", ""),
             "enhanced_text": final_state.get("enhanced_text", ""),
+            "title": final_state.get("title", ""),
+            "summary": final_state.get("summary", ""),
             "synonyms_found": len(final_state.get("synonyms", {})),
             "synonyms_applied": final_state.get("synonyms", {}),
             "token_usage": final_state.get("token_usage", {}),
             "pdf_base64": final_state.get("pdf_content", ""),
             "parsed_data": final_state.get("parsed_data", {}),
             "workflow_info": {
-                "agents_used": ["parse_text", "find_equivalents", "consolidate_text"],
+                "agents_used": ["parse_text", "find_equivalents", "generate_summary", "consolidate_text"],
                 "workflow_type": "langgraph_chat_completions_api_pipeline",
-                "version": "3.0",
+                "version": "3.2",  # Updated 2026-04-23 08:47
                 "langgraph_enabled": True,
                 "azure_openai_chat_completions_enabled": True,
             },
@@ -169,15 +173,17 @@ def text_processing_orchestrator(context: df.DurableOrchestrationContext):
             "success": True,
             "original_text": final_state.get("text", ""),
             "enhanced_text": final_state.get("enhanced_text", ""),
+            "title": final_state.get("title", ""),
+            "summary": final_state.get("summary", ""),
             "synonyms_found": len(final_state.get("synonyms", {})),
             "synonyms_applied": final_state.get("synonyms", {}),
             "token_usage": final_state.get("token_usage", {}),
             "pdf_base64": final_state.get("pdf_content", ""),
             "parsed_data": final_state.get("parsed_data", {}),
             "workflow_info": {
-                "agents_used": ["parse_text", "find_equivalents", "consolidate_text"],
+                "agents_used": ["parse_text", "find_equivalents", "generate_summary", "consolidate_text"],
                 "workflow_type": "langgraph_chat_completions_durable_functions",
-                "version": "3.0",
+                "version": "3.2",
                 "instance_id": context.instance_id,
                 "langgraph_enabled": True,
                 "azure_openai_chat_completions_enabled": True,
@@ -371,14 +377,16 @@ def process_blob(blob: func.InputStream):
             "metadata_blob": f"results/{result_blob_name}",
             "original_text": final_state.get("text", ""),
             "enhanced_text": final_state.get("enhanced_text", ""),
+            "title": final_state.get("title", ""),
+            "summary": final_state.get("summary", ""),
             "synonyms_found": len(final_state.get("synonyms", {})),
             "synonyms_applied": final_state.get("synonyms", {}),
             "token_usage": final_state.get("token_usage", {}),
             "parsed_data": final_state.get("parsed_data", {}),
             "workflow_info": {
-                "agents_used": ["parse_text", "find_equivalents", "consolidate_text"],
+                "agents_used": ["parse_text", "find_equivalents", "generate_summary", "consolidate_text"],
                 "workflow_type": "langgraph_chat_completions_api_pipeline",
-                "version": "3.0",
+                "version": "3.2",
                 "langgraph_enabled": True,
                 "azure_openai_chat_completions_enabled": True,
                 "processing_timestamp": datetime.now(timezone.utc).isoformat()
@@ -427,7 +435,7 @@ def process_blob(blob: func.InputStream):
             "traceback": traceback.format_exc(),
             "workflow_info": {
                 "workflow_type": "langgraph_completions_api_pipeline",
-                "version": "3.0",
+                "version": "3.2",
                 "error_timestamp": datetime.now(timezone.utc).isoformat()
             },
         }

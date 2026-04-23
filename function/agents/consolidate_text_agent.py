@@ -15,7 +15,20 @@ def consolidate_text_agent(state: AgentState) -> AgentState:
     enhanced_text = text
     for word, synonym_list in synonyms.items():
         if synonym_list:
-            enhanced_text = enhanced_text.replace(word, synonym_list[0])
+            # Handle different types of synonym data
+            if isinstance(synonym_list, list) and len(synonym_list) > 0:
+                enhanced_text = enhanced_text.replace(word, synonym_list[0])
+            elif isinstance(synonym_list, dict):
+                # Handle dict format: {"1": "examine", "2": "evaluate"} or {0: "examine"}
+                first_value = next(iter(synonym_list.values()), None)
+                if first_value and isinstance(first_value, str):
+                    enhanced_text = enhanced_text.replace(word, first_value)
+                else:
+                    logging.warning(f"Dict synonym format has no usable value for word '{word}': {synonym_list}")
+            elif isinstance(synonym_list, str):
+                enhanced_text = enhanced_text.replace(word, synonym_list)
+            else:
+                logging.warning(f"Unexpected synonym format for word '{word}': {type(synonym_list)}")
     
     state["enhanced_text"] = enhanced_text
     

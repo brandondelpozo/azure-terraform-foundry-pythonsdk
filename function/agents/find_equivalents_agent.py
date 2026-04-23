@@ -31,11 +31,11 @@ def _call_azure_openai_chat_completions_for_synonyms(text: str) -> tuple[dict, d
     messages = [
         {
             "role": "system",
-            "content": "You are a professional writing assistant that finds synonyms for business documents. Return only valid JSON format."
+            "content": "You are a professional writing assistant that finds synonyms and creates titles and summaries for business documents. Return only valid JSON format."
         },
         {
             "role": "user", 
-            "content": f"""Analyze this document text and find professional synonyms for important words.
+            "content": f"""Analyze this document text and find professional synonyms for important words, then create a title and summary for the document.
 
 Document Text: "{text}"
 
@@ -72,6 +72,7 @@ JSON Response:"""
         result = response.json()
         
         # Extract token usage information
+        print("----------TESTTT----------")
         token_usage = {}
         if "usage" in result:
             token_usage = {
@@ -144,10 +145,15 @@ def find_equivalents_agent(state: AgentState) -> AgentState:
     text = state.get("text", "")
     
     logging.info("Starting synonym analysis with Azure OpenAI Chat Completions...")
-    
+    logging.info("LOGING info test line 148")
+
     # Try Azure OpenAI Chat Completions first
     ai_synonyms, token_usage = _call_azure_openai_chat_completions_for_synonyms(text)
     
+    print("- print function return _call_azure_openai_chat_completions_for_synonyms(text) ----------:",_call_azure_openai_chat_completions_for_synonyms(text))
+    print("- line 149 ai_synonyms and token_usage ----------:",ai_synonyms, token_usage)
+    logging.info("- info logging in line 154 -")
+
     logging.info(f"AI call result - Synonyms: {len(ai_synonyms) if ai_synonyms else 0} groups, Token usage: {token_usage}")
     
     # ALWAYS estimate token usage if we attempted an AI call (even if it returned no synonyms)
@@ -163,11 +169,6 @@ def find_equivalents_agent(state: AgentState) -> AgentState:
             "reason": "AI_call_attempted_but_no_usage_returned"
         }
         logging.warning(f"Estimated token usage after AI call: {token_usage}")
-    
-    # FORCE token usage to always have a value for debugging
-    if not token_usage:
-        token_usage = {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "forced": True}
-        logging.error("CRITICAL: Had to force token_usage to non-empty value!")
     
     if ai_synonyms:
         # Use AI-generated synonyms

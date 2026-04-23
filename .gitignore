@@ -22,4 +22,6 @@ build/
 
 # macOS
 .DS_Store
-.vscode
+.vscodelocal.settings.json
+tfplan
+*.tfplan

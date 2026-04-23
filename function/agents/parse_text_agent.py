@@ -5,6 +5,8 @@ class AgentState(TypedDict):
     text: str
     parsed_data: dict
     synonyms: dict
+    title: str
+    summary: str
     enhanced_text: str
     pdf_content: str
     token_usage: dict  # Add token_usage to the state type
