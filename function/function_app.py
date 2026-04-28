@@ -20,6 +20,7 @@ from azure.storage.blob import (
 # Import LangGraph pipeline instead of individual agents
 from agents.langgraph_pipeline import run_langgraph_document_pipeline
 from agents.parse_text_agent import AgentState
+from agents.excel_langgraph_pipeline import run_excel_langgraph_pipeline
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -149,6 +150,76 @@ def http_start(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ---------------------------------------------------------------------------
+# PATH A.1 — Excel Processing HTTP Trigger POST /process-excel
+# ---------------------------------------------------------------------------
+@app.route(route="process-excel", methods=["POST"])
+def process_excel_http(req: func.HttpRequest) -> func.HttpResponse:
+    """HTTP trigger that processes Excel files with the LangGraph pipeline."""
+    try:
+        # Handle both multipart form data and JSON with base64 content
+        content_type = req.headers.get('Content-Type', '')
+        
+        if 'multipart/form-data' in content_type:
+            # Handle file upload
+            files = req.files
+            if 'file' not in files:
+                return func.HttpResponse(
+                    json.dumps({"error": "No file provided in multipart request"}),
+                    status_code=400,
+                    mimetype="application/json",
+                )
+            
+            file = files['file']
+            excel_content = file.read()
+            filename = file.filename or "uploaded.xlsx"
+            
+        else:
+            # Handle JSON with base64 content
+            req_body = req.get_json()
+            if not req_body or "excel_content" not in req_body:
+                return func.HttpResponse(
+                    json.dumps({"error": "Missing 'excel_content' in request body"}),
+                    status_code=400,
+                    mimetype="application/json",
+                )
+
+            import base64
+            excel_content = base64.b64decode(req_body.get("excel_content"))
+            filename = req_body.get("filename", "uploaded.xlsx")
+        
+        # Validate file extension
+        if not filename.lower().endswith(('.xlsx', '.xls')):
+            return func.HttpResponse(
+                json.dumps({"error": "Only .xlsx and .xls files are supported"}),
+                status_code=400,
+                mimetype="application/json",
+            )
+        
+        logging.info(f"Processing Excel file from /process-excel: {filename} ({len(excel_content)} bytes)")
+
+        # Use Excel LangGraph pipeline
+        result = run_excel_langgraph_pipeline(excel_content, filename)
+        
+        logging.info(f"Excel processing completed for: {filename}")
+        logging.info(f"Generated title: {result.get('title', 'N/A')}")
+        logging.info(f"Token usage: {result.get('token_usage', {})}")
+
+        return func.HttpResponse(
+            json.dumps(result, ensure_ascii=False),
+            status_code=200,
+            mimetype="application/json",
+        )
+
+    except Exception as e:
+        logging.error(f"Excel processing HTTP trigger error: {str(e)}")
+        return func.HttpResponse(
+            json.dumps({"error": str(e)}),
+            status_code=500,
+            mimetype="application/json",
+        )
+
+
+# ---------------------------------------------------------------------------
 # PATH B — Async Durable Orchestrator (Updated for LangGraph)
 # ---------------------------------------------------------------------------
 @app.orchestration_trigger(context_name="context")
@@ -260,8 +331,9 @@ def consolidate_text_activity(input: dict) -> dict:
 @app.route(route="generate-upload-url", methods=["POST"])
 def generate_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Generates a write-only SAS URL so the client can upload a .docx file
+    Generates a write-only SAS URL so the client can upload files
     directly to Azure Blob Storage without needing Azure credentials.
+    Supports .txt, .docx, .xlsx, and .xls files.
     """
     try:
         req_body = req.get_json()
@@ -273,10 +345,10 @@ def generate_upload_url(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         filename = req_body["filename"]
-        ALLOWED = (".txt", ".docx")
+        ALLOWED = (".txt", ".docx", ".xlsx", ".xls")
         if not filename.endswith(ALLOWED):
             return func.HttpResponse(
-                json.dumps({"error": "Only .txt and .docx files are supported"}),
+                json.dumps({"error": "Only .txt, .docx, .xlsx, and .xls files are supported"}),
                 status_code=400,
                 mimetype="application/json",
             )
@@ -335,11 +407,11 @@ def generate_upload_url(req: func.HttpRequest) -> func.HttpResponse:
 )
 def process_blob(blob: func.InputStream):
     """
-    LangGraph-powered document processing with Azure OpenAI Completions API
-    Triggered by .docx upload to uploads/, saves enhanced version to results/
+    LangGraph-powered document and Excel processing with Azure OpenAI Completions API
+    Triggered by file upload to uploads/, saves an enhanced version to results/
     """
-    blob_name = blob.name  # e.g. "uploads/mydoc.docx"
-    filename = blob_name.split("/")[-1]  # e.g. "mydoc.docx"
+    blob_name = blob.name  # e.g. "uploads/mydoc.docx" or "uploads/myfile.xlsx"
+    filename = blob_name.split("/")[-1]  # e.g. "mydoc.docx" or "myfile.xlsx"
 
     logging.info(f"LangGraph + Completions API processing started for: {blob_name}")
     
@@ -347,55 +419,73 @@ def process_blob(blob: func.InputStream):
     account_key = os.environ["STORAGE_ACCOUNT_KEY"]
     base_name, _ = os.path.splitext(filename)
     result_blob_name = f"{base_name}.metadata.json"
-    improved_docx_blob_name = f"{base_name}_improved.docx"
 
     try:
         # Validate file type
-        ALLOWED = (".txt", ".docx")
+        ALLOWED = (".txt", ".docx", ".xlsx", ".xls")
         if not filename.endswith(ALLOWED):
             logging.warning(f"Unsupported file type: {filename} - skipping")
             return
 
-        # Extract text from uploaded document
+        # Read file content
         raw_bytes = blob.read()
-        text = _extract_text(raw_bytes, filename)
-        logging.info(f"Extracted {len(text)} characters from: {filename}")
-
-        if not text.strip():
-            logging.warning(f"Empty document: {filename} - skipping")
-            return
-
-        # Run LangGraph pipeline with Completions API
-        logging.info("Starting LangGraph pipeline with Azure OpenAI Completions...")
-        final_state = _run_agent_pipeline(text, filename)
-
-        # Prepare processing result metadata
-        result = {
-            "success": True,
-            "source_blob": blob_name,
-            "result_blob": f"results/{improved_docx_blob_name}",
-            "metadata_blob": f"results/{result_blob_name}",
-            "original_text": final_state.get("text", ""),
-            "enhanced_text": final_state.get("enhanced_text", ""),
-            "title": final_state.get("title", ""),
-            "summary": final_state.get("summary", ""),
-            "synonyms_found": len(final_state.get("synonyms", {})),
-            "synonyms_applied": final_state.get("synonyms", {}),
-            "token_usage": final_state.get("token_usage", {}),
-            "parsed_data": final_state.get("parsed_data", {}),
-            "workflow_info": {
-                "agents_used": ["parse_text", "find_equivalents", "generate_summary", "consolidate_text"],
-                "workflow_type": "langgraph_chat_completions_api_pipeline",
-                "version": "3.2",
-                "langgraph_enabled": True,
-                "azure_openai_chat_completions_enabled": True,
+        
+        # Process based on file type
+        if filename.lower().endswith(('.xlsx', '.xls')):
+            # Excel file processing
+            logging.info(f"Processing Excel file: {filename}")
+            result = run_excel_langgraph_pipeline(raw_bytes, filename)
+            
+            # Prepare Excel-specific result metadata
+            processing_result = {
+                "success": result.get("success", False),
+                "source_blob": blob_name,
+                "metadata_blob": f"results/{result_blob_name}",
+                "filename": filename,
+                "title": result.get("title", ""),
+                "summary": result.get("summary", ""),
+#                "parsed_data": result.get("parsed_data", {})
+                "token_usage": result.get("token_usage", {}),
+                "workflow_info": result.get("workflow_info", {}),
                 "processing_timestamp": datetime.now(timezone.utc).isoformat()
-            },
-        }
+            }
+            
+        else:
+            # Text/Word document processing (existing logic)
+            text = _extract_text(raw_bytes, filename)
+            logging.info(f"Extracted {len(text)} characters from: {filename}")
 
-        # Create enhanced .docx document
-        enhanced_text = final_state.get("enhanced_text", "") or final_state.get("text", "")
-        improved_docx_bytes = _build_docx_bytes_from_text(enhanced_text)
+            if not text.strip():
+                logging.warning(f"Empty document: {filename} - skipping")
+                return
+
+            # Run LangGraph pipeline with Completions API
+            logging.info("Starting LangGraph pipeline with Azure OpenAI Completions...")
+            final_state = _run_agent_pipeline(text, filename)
+            
+            # Prepare text document result metadata
+            processing_result = {
+                "success": True,
+                "source_blob": blob_name,
+                "result_blob": f"results/{base_name}_improved.docx",
+                "metadata_blob": f"results/{result_blob_name}",
+                "original_text": final_state.get("text", ""),
+                "enhanced_text": final_state.get("enhanced_text", ""),
+                "title": final_state.get("title", ""),
+                "summary": final_state.get("summary", ""),
+                "synonyms_found": len(final_state.get("synonyms", {})),
+                "synonyms_applied": final_state.get("synonyms", {}),
+                "token_usage": final_state.get("token_usage", {}),
+                "parsed_data": final_state.get("parsed_data", {}),
+                "workflow_info": {
+                    "agents_used": ["parse_text", "find_equivalents", "generate_summary", "consolidate_text"],
+                    "workflow_type": "langgraph_chat_completions_api_pipeline",
+                    "version": "3.2",
+                    "langgraph_enabled": True,
+                    "azure_openai_chat_completions_enabled": True,
+                    "processing_timestamp": datetime.now(timezone.utc).isoformat()
+                },
+            }
 
         # Save results to "results/" container
         blob_service = BlobServiceClient(
@@ -404,21 +494,27 @@ def process_blob(blob: func.InputStream):
         )
         results_container = blob_service.get_container_client("results")
 
-        # Upload enhanced .docx file
-        results_container.upload_blob(
-            name=improved_docx_blob_name,
-            data=improved_docx_bytes,
-            overwrite=True,
-            content_settings=ContentSettings(
-                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ),
-        )
-        logging.info(f"Enhanced .docx saved to: results/{improved_docx_blob_name}")
+        # For text documents, create and upload enhanced .docx
+        if not filename.lower().endswith(('.xlsx', '.xls')):
+            improved_docx_blob_name = f"{base_name}_improved.docx"
+            enhanced_text = final_state.get("enhanced_text", "") or final_state.get("text", "")
+            improved_docx_bytes = _build_docx_bytes_from_text(enhanced_text)
+            
+            # Upload enhanced .docx file
+            results_container.upload_blob(
+                name=improved_docx_blob_name,
+                data=improved_docx_bytes,
+                overwrite=True,
+                content_settings=ContentSettings(
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+            )
+            logging.info(f"Enhanced .docx saved to: results/{improved_docx_blob_name}")
 
         # Upload processing metadata
         results_container.upload_blob(
             name=result_blob_name,
-            data=json.dumps(result, ensure_ascii=False, indent=2),
+            data=json.dumps(processing_result, ensure_ascii=False, indent=2),
             overwrite=True,
             content_settings=ContentSettings(content_type="application/json"),
         )
